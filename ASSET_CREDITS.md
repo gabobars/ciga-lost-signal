@@ -1,14 +1,20 @@
-﻿# Asset Credits and Provenance
+﻿# Asset Credits — CIGA - Lost Signal
 
-Complete and verify this inventory before publicly distributing the bundled media. Do not assume an asset is distributable unless its creator, source or permission is known.
+The visual and audio resources listed below were created specifically for CIGA - Lost Signal, based on the project's original concepts and creative direction.
 
-| File | Creator or source | Licence or permission | Verified? |
-|---|---|---|---|
-| `data/ciga_transition.effect` | To be confirmed by maintainer | To be confirmed | No |
-| `data/signal_lost.png` | To be confirmed by maintainer | To be confirmed | No |
-| `data/audio/normal.wav` | To be confirmed by maintainer | To be confirmed | No |
-| `data/audio/halloween.wav` | To be confirmed by maintainer | To be confirmed | No |
-| `data/audio/november.wav` | To be confirmed by maintainer | To be confirmed | No |
-| `data/audio/christmas.wav` | To be confirmed by maintainer | To be confirmed | No |
+## Included resources
 
-Replace the placeholders with accurate credits or permission details. If any asset cannot legally be redistributed, replace it or obtain permission before publishing a release.
+| File | Description |
+|---|---|
+| `data/ciga_transition.effect` | Custom signal-loss transition effect |
+| `data/signal_lost.png` | Visual resource used by the transition |
+| `data/audio/normal.wav` | Normal theme audio |
+| `data/audio/halloween.wav` | Halloween theme audio |
+| `data/audio/november.wav` | November theme audio |
+| `data/audio/christmas.wav` | Christmas theme audio |
+
+No third-party stock asset packs are intentionally bundled with this release.
+
+The repository's `LICENSE` file contains the project licence. Consult it for the applicable terms. Third-party components and dependencies remain subject to their respective licences.
+
+For questions about a particular resource, please use the project's GitHub Issues page.
