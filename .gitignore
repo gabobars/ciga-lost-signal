@@ -1,0 +1,56 @@
+# Exclude everything
+/*
+
+# Except for default project files
+!/.github
+!/build-aux
+!/cmake
+!/data
+!/src
+!.clang-format
+!.gersemirc
+!.gitignore
+!buildspec.json
+!CMakeLists.txt
+!CMakePresets.json
+!LICENSE
+!README.md
+
+# Exclude lock files
+*.lock.json
+
+# Exclude macOS legacy resource forks
+.DS_Store
+
+# Exclude CMake build number cache
+/cmake/.CMakeBuildNumber
+
+# Local build output and generated release packages
+/build_x64/
+/build_x86/
+/release/
+
+# Local recovery files, backups and historical variants
+*.bak
+*.backup
+*.before-*
+*.current-*
+/history_*.txt
+/recovery_*.ps1
+/recover_*.ps1
+/recovered_christmas_versions/
+
+# Keep the installer source and release-packaging script in Git
+!/installer/
+!/tools/
+
+# Public documentation
+!/CONTRIBUTING.md
+!/PRIVACY_POLICY.md
+!/SECURITY.md
+!/THIRD_PARTY_NOTICES.md
+!/ASSET_CREDITS.md
+!/CHANGELOG.md
+
+# Release assets are uploaded separately to GitHub Releases
+/release-assets/

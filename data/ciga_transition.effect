@@ -1,0 +1,3798 @@
+﻿uniform float4x4 ViewProj;
+
+uniform texture2d tex_a;
+uniform texture2d tex_b;
+uniform texture2d report_tex;
+
+uniform float progress;
+uniform float theme_version;
+
+sampler_state textureSampler {
+    Filter = Linear;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
+sampler_state reportSampler {
+    Filter = Linear;
+    AddressU = Clamp;
+    AddressV = Clamp;
+};
+
+struct VertData {
+    float4 pos : POSITION;
+    float2 uv : TEXCOORD0;
+};
+
+VertData VSDefault(VertData v_in)
+{
+    VertData vert_out;
+
+    vert_out.pos =
+        mul(
+            float4(
+                v_in.pos.xyz,
+                1.0
+            ),
+            ViewProj
+        );
+
+    vert_out.uv =
+        v_in.uv;
+
+    return vert_out;
+}
+
+/*
+ * ============================================================
+ * GENERAL UTILITIES
+ * ============================================================
+ */
+
+float hash_value(float2 p)
+{
+    return frac(
+        sin(
+            dot(
+                p,
+                float2(
+                    127.1,
+                    311.7
+                )
+            )
+        )
+        *
+        43758.5453
+    );
+}
+
+float noise_value(float2 p)
+{
+    float2 i =
+        floor(
+            p
+        );
+
+    float2 f =
+        frac(
+            p
+        );
+
+    float a =
+        hash_value(
+            i
+        );
+
+    float b =
+        hash_value(
+            i +
+            float2(
+                1.0,
+                0.0
+            )
+        );
+
+    float c =
+        hash_value(
+            i +
+            float2(
+                0.0,
+                1.0
+            )
+        );
+
+    float d =
+        hash_value(
+            i +
+            float2(
+                1.0,
+                1.0
+            )
+        );
+
+    float2 u =
+        f *
+        f *
+        (
+            3.0 -
+            2.0 *
+            f
+        );
+
+    return
+        lerp(
+            lerp(
+                a,
+                b,
+                u.x
+            ),
+            lerp(
+                c,
+                d,
+                u.x
+            ),
+            u.y
+        );
+}
+
+float luminance_value(float3 color)
+{
+    return
+        dot(
+            color,
+            float3(
+                0.299,
+                0.587,
+                0.114
+            )
+        );
+}
+
+float3 grayscale_value(float3 color)
+{
+    float value =
+        luminance_value(
+            color
+        );
+
+    return float3(
+        value,
+        value,
+        value
+    );
+}
+
+float4 sample_scene(
+    texture2d source_texture,
+    float2 uv,
+    float shift
+)
+{
+    float2 red_uv =
+        saturate(
+            uv +
+            float2(
+                shift,
+                0.0
+            )
+        );
+
+    float2 green_uv =
+        saturate(
+            uv
+        );
+
+    float2 blue_uv =
+        saturate(
+            uv -
+            float2(
+                shift,
+                0.0
+            )
+        );
+
+    float red =
+        source_texture.Sample(
+            textureSampler,
+            red_uv
+        ).r;
+
+    float green =
+        source_texture.Sample(
+            textureSampler,
+            green_uv
+        ).g;
+
+    float blue =
+        source_texture.Sample(
+            textureSampler,
+            blue_uv
+        ).b;
+
+    return float4(
+        red,
+        green,
+        blue,
+        1.0
+    );
+}
+
+float line_band(
+    float y,
+    float center,
+    float size
+)
+{
+    return
+        1.0 -
+        smoothstep(
+            size,
+            size * 1.35,
+            abs(
+                y -
+                center
+            )
+        );
+}
+
+float reveal_line(
+    float y,
+    float center,
+    float size,
+    float start_time,
+    float end_time,
+    float t,
+    float x,
+    float x_start,
+    float x_end
+)
+{
+    float band =
+        line_band(
+            y,
+            center,
+            size
+        );
+
+    float active =
+        step(
+            start_time,
+            t
+        );
+
+    float typing_progress =
+        smoothstep(
+            start_time,
+            end_time,
+            t
+        );
+
+    float reveal_x =
+        lerp(
+            x_start,
+            x_end,
+            typing_progress
+        );
+
+    float x_mask =
+        1.0 -
+        smoothstep(
+            reveal_x - 0.0015,
+            reveal_x + 0.0015,
+            x
+        );
+
+    return
+        band *
+        active *
+        x_mask;
+}
+
+float glow_circle(
+    float2 uv,
+    float2 center,
+    float radius,
+    float glow_radius
+)
+{
+    float d =
+        length(
+            uv -
+            center
+        );
+
+    float core =
+        1.0 -
+        smoothstep(
+            radius * 0.72,
+            radius,
+            d
+        );
+
+    float glow =
+        1.0 -
+        smoothstep(
+            radius,
+            glow_radius,
+            d
+        );
+
+    return
+        core +
+        glow *
+        0.42;
+}
+
+/*
+ * ============================================================
+ * NORMAL
+ *
+ * CIGA surveillance report.
+ * ============================================================
+ */
+
+float ring_mask(
+    float2 uv,
+    float2 center,
+    float radius,
+    float thickness
+)
+{
+    float distance_from_ring =
+        abs(
+            length(
+                uv - center
+            ) -
+            radius
+        );
+
+    return 1.0 -
+        smoothstep(
+            thickness,
+            thickness * 2.0,
+            distance_from_ring
+        );
+}
+float segment_mask(
+    float2 uv,
+    float2 start_point,
+    float2 end_point,
+    float thickness
+)
+{
+    float2 segment =
+        end_point -
+        start_point;
+
+    float segment_length_squared =
+        dot(
+            segment,
+            segment
+        );
+
+    float projection =
+        0.0;
+
+    if (segment_length_squared > 0.000001)
+    {
+        projection =
+            dot(
+                uv -
+                start_point,
+                segment
+            )
+            /
+            segment_length_squared;
+    }
+
+    projection =
+        clamp(
+            projection,
+            0.0,
+            1.0
+        );
+
+    float2 closest_point =
+        start_point +
+        segment *
+        projection;
+
+    float distance_to_segment =
+        length(
+            uv -
+            closest_point
+        );
+
+    return 1.0 -
+        smoothstep(
+            thickness,
+            thickness * 2.0,
+            distance_to_segment
+        );
+}
+float4 render_normal(
+    VertData v_in
+)
+{
+    float t =
+        saturate(
+            progress
+        );
+
+    float2 uv =
+        v_in.uv;
+
+    float frame =
+        floor(
+            t *
+            150.0
+        );
+
+    /*
+     * ========================================================
+     * PHASES
+     * ========================================================
+     */
+
+    float failure =
+        smoothstep(
+            0.0,
+            0.22,
+            t
+        );
+
+    float interference =
+        smoothstep(
+            0.05,
+            0.24,
+            t
+        )
+        *
+        (
+            1.0 -
+            smoothstep(
+                0.68,
+                0.94,
+                t
+            )
+        );
+
+    float interference_pulse =
+        smoothstep(
+            0.27,
+            0.34,
+            t
+        )
+        *
+        (
+            1.0 -
+            smoothstep(
+                0.43,
+                0.50,
+                t
+            )
+        )
+        *
+        0.45;
+
+    interference =
+        saturate(
+            interference +
+            interference_pulse
+        );
+
+    float panel_in =
+        smoothstep(
+            0.20,
+            0.30,
+            t
+        );
+
+    float recovery =
+        smoothstep(
+            0.72,
+            0.99,
+            t
+        );
+
+    /*
+     * ========================================================
+     * SIGNAL DAMAGE
+     * ========================================================
+     */
+
+    float band =
+        floor(
+            uv.y *
+            145.0
+        );
+
+    float band_random =
+        hash_value(
+            float2(
+                band,
+                frame
+            )
+        );
+
+    float jitter =
+        (
+            band_random -
+            0.5
+        )
+        *
+        0.040
+        *
+        interference;
+
+    float major_glitch =
+        step(
+            0.965,
+            hash_value(
+                float2(
+                    band +
+                    37.0,
+                    frame *
+                    0.63
+                )
+            )
+        );
+
+    jitter +=
+        (
+            hash_value(
+                float2(
+                    band +
+                    91.0,
+                    frame
+                )
+            )
+            -
+            0.5
+        )
+        *
+        0.110
+        *
+        major_glitch
+        *
+        interference;
+
+    float2 damaged_uv =
+        uv +
+        float2(
+            jitter,
+            0.0
+        );
+
+    /*
+     * ========================================================
+     * SCENES
+     * ========================================================
+     */
+
+    float rgb_shift =
+        0.0004 +
+        0.0038 *
+        interference;
+
+    float4 scene_a =
+        sample_scene(
+            tex_a,
+            damaged_uv,
+            rgb_shift
+        );
+
+    float4 scene_b =
+        sample_scene(
+            tex_b,
+            damaged_uv,
+            rgb_shift
+        );
+
+        float scene_mix =
+        smoothstep(
+            0.40,
+            0.58,
+            t
+        );
+
+    float4 scene =
+        lerp(
+            scene_a,
+            scene_b,
+            scene_mix
+        );
+
+    /*
+     * ========================================================
+     * ADDITIONAL SIGNAL OFFSET
+     * ========================================================
+     */
+
+    float signal_slice =
+        floor(
+            uv.y *
+            85.0
+        );
+
+    float signal_slice_random =
+        hash_value(
+            float2(
+                signal_slice,
+                frame *
+                1.13
+            )
+        );
+
+    float signal_slice_mask =
+        step(
+            0.970,
+            signal_slice_random
+        )
+        *
+        interference;
+
+    float signal_slice_offset =
+        (
+            hash_value(
+                float2(
+                    signal_slice +
+                    131.0,
+                    frame *
+                    0.91
+                )
+            )
+            -
+            0.5
+        )
+        *
+        0.095
+        *
+        signal_slice_mask;
+
+    float4 shifted_scene =
+        sample_scene(
+            tex_a,
+            saturate(
+                uv +
+                float2(
+                    signal_slice_offset,
+                    0.0
+                )
+            ),
+            rgb_shift *
+            1.35
+        );
+
+    scene.rgb =
+        lerp(
+            scene.rgb,
+            shifted_scene.rgb,
+            signal_slice_mask *
+            0.62
+        );
+
+    /*
+     * ========================================================
+     * MONOCHROME
+     * ========================================================
+     */
+
+    float luminance =
+        dot(
+            scene.rgb,
+            float3(
+                0.299,
+                0.587,
+                0.114
+            )
+        );
+
+    float3 grayscale =
+        float3(
+            luminance,
+            luminance,
+            luminance
+        );
+
+    scene.rgb =
+        lerp(
+            scene.rgb,
+            grayscale,
+            failure *
+            (
+                1.0 -
+                recovery *
+                0.70
+            )
+        );
+
+    /*
+     * ========================================================
+     * DARKEN
+     * ========================================================
+     */
+
+    float darken =
+        smoothstep(
+            0.16,
+            0.40,
+            t
+        )
+        *
+        (
+            1.0 -
+            smoothstep(
+                0.60,
+                0.84,
+                t
+            )
+        );
+
+    scene.rgb *=
+        1.0 -
+        darken *
+        0.82;
+
+    /*
+     * ========================================================
+     * SCANLINES
+     * ========================================================
+     */
+
+    float scan =
+        0.994 +
+        0.006 *
+        sin(
+            uv.y *
+            900.0 *
+            3.14159265
+        );
+
+    scene.rgb *=
+        lerp(
+            1.0,
+            scan,
+            0.82 *
+            interference
+        );
+
+    /*
+     * ========================================================
+     * GRAIN
+     * ========================================================
+     */
+
+    float grain =
+        hash_value(
+            uv *
+            float2(
+                1600.0,
+                900.0
+            )
+            +
+            frame
+        );
+
+    scene.rgb +=
+        (
+            grain -
+            0.5
+        )
+        *
+        (
+            0.030 *
+            interference
+        );
+
+    /*
+     * ========================================================
+     * RANDOM TEARING
+     * ========================================================
+     */
+
+    float break_row =
+        floor(
+            uv.y *
+            58.0
+        );
+
+    float break_random =
+        hash_value(
+            float2(
+                break_row,
+                frame *
+                0.71
+            )
+        );
+
+    float break_mask =
+        step(
+            0.966,
+            break_random
+        )
+        *
+        interference;
+
+    scene.rgb *=
+        1.0 -
+        break_mask *
+        0.58;
+
+    /*
+     * ========================================================
+     * TECHNICAL GLITCH BANDS
+     * ========================================================
+     */
+
+    float tech_row =
+        floor(
+            uv.y *
+            72.0
+        );
+
+    float tech_random =
+        hash_value(
+            float2(
+                tech_row +
+                241.0,
+                frame *
+                0.83
+            )
+        );
+
+    float tech_band =
+        step(
+            0.978,
+            tech_random
+        )
+        *
+        interference;
+
+    float tech_x =
+        smoothstep(
+            0.12,
+            0.18,
+            uv.x
+        )
+        *
+        (
+            1.0 -
+            smoothstep(
+                0.78,
+                0.86,
+                uv.x
+            )
+        );
+
+    scene.rgb +=
+        tech_band *
+        tech_x *
+        float3(
+            0.92,
+            0.92,
+            0.92
+        )
+        *
+        0.085;
+
+    /*
+     * ========================================================
+     * REPORT TEXTURE
+     * ========================================================
+     */
+
+    float4 report =
+        report_tex.Sample(
+            reportSampler,
+            uv
+        );
+
+    /*
+     * ========================================================
+     * CIGA SYSTEMS HEADER
+     * ========================================================
+     */
+
+    float x_start =
+        0.155;
+
+    float x_end =
+        0.84;
+
+    float ciga_systems =
+        reveal_line(
+            uv.y,
+            0.139,
+            0.018,
+            0.16,
+            0.25,
+            t,
+            uv.x,
+            x_start,
+            0.37
+        );
+
+    float ciga_network =
+        reveal_line(
+            uv.y,
+            0.176,
+            0.011,
+            0.20,
+            0.29,
+            t,
+            uv.x,
+            x_start,
+            0.60
+        );
+
+    /*
+     * Short site-style divider.
+     */
+
+    float header_divider =
+        reveal_line(
+            uv.y,
+            0.208,
+            0.0013,
+            0.20,
+            0.27,
+            t,
+            uv.x,
+            x_start,
+            0.60
+        );
+
+    /*
+     * ========================================================
+     * NO LARGE PANEL
+     * ========================================================
+     */
+
+    float panel_strength =
+        0.0;
+
+    scene.rgb =
+        lerp(
+            scene.rgb,
+            scene.rgb,
+            panel_strength
+        );
+
+    /*
+     * ========================================================
+     * REPORT LINE REVEAL
+     * ========================================================
+     */
+
+    float line_header =
+        reveal_line(
+            uv.y,
+            0.296,
+            0.011,
+            0.27,
+            0.34,
+            t,
+            uv.x,
+            x_start,
+            x_end
+        );
+
+    float line_title =
+        reveal_line(
+            uv.y,
+            0.389,
+            0.022,
+            0.31,
+            0.43,
+            t,
+            uv.x,
+            x_start,
+            0.52
+        );
+
+    float line_1 =
+        reveal_line(
+            uv.y,
+            0.455,
+            0.014,
+            0.40,
+            0.49,
+            t,
+            uv.x,
+            x_start,
+            x_end
+        );
+
+    float line_2 =
+        reveal_line(
+            uv.y,
+            0.501,
+            0.014,
+            0.47,
+            0.56,
+            t,
+            uv.x,
+            x_start,
+            x_end
+        );
+
+    float line_3 =
+        reveal_line(
+            uv.y,
+            0.548,
+            0.014,
+            0.54,
+            0.63,
+            t,
+            uv.x,
+            x_start,
+            0.50
+        );
+
+    float line_4 =
+        reveal_line(
+            uv.y,
+            0.594,
+            0.014,
+            0.61,
+            0.70,
+            t,
+            uv.x,
+            x_start,
+            x_end
+        );
+
+    float line_5 =
+        reveal_line(
+            uv.y,
+            0.640,
+            0.014,
+            0.67,
+            0.76,
+            t,
+            uv.x,
+            x_start,
+            0.60
+        );
+
+    float log_header =
+        reveal_line(
+            uv.y,
+            0.684,
+            0.009,
+            0.73,
+            0.77,
+            t,
+            uv.x,
+            x_start,
+            0.32
+        );
+
+    float log_1 =
+        reveal_line(
+            uv.y,
+            0.708,
+            0.009,
+            0.75,
+            0.80,
+            t,
+            uv.x,
+            x_start,
+            0.50
+        );
+
+    float log_2 =
+        reveal_line(
+            uv.y,
+            0.731,
+            0.009,
+            0.78,
+            0.83,
+            t,
+            uv.x,
+            x_start,
+            0.51
+        );
+
+    float log_3 =
+        reveal_line(
+            uv.y,
+            0.755,
+            0.009,
+            0.81,
+            0.86,
+            t,
+            uv.x,
+            x_start,
+            0.47
+        );
+
+    float text_mask =
+        ciga_systems +
+        ciga_network +
+        line_header +
+        line_title +
+        line_1 +
+        line_2 +
+        line_3 +
+        line_4 +
+        line_5 +
+        log_header +
+        log_1 +
+        log_2 +
+        log_3;
+
+    text_mask =
+        saturate(
+            text_mask
+        );
+
+    float text_alpha =
+        report.a *
+        text_mask *
+        0.98;
+
+    scene.rgb =
+        lerp(
+            scene.rgb,
+            float3(
+                0.97,
+                0.97,
+                0.97
+            ),
+            text_alpha
+        );
+
+    /*
+     * Site-style short divider.
+     */
+
+    scene.rgb =
+        lerp(
+            scene.rgb,
+            float3(
+                0.90,
+                0.90,
+                0.90
+            ),
+            header_divider *
+            0.30
+        );
+
+    /*
+     * ========================================================
+     * REPORT NOISE
+     * ========================================================
+     */
+
+    float report_noise =
+        hash_value(
+            uv *
+            float2(
+                1200.0,
+                650.0
+            )
+            +
+            frame
+        );
+
+    scene.rgb +=
+        (
+            report_noise -
+            0.5
+        )
+        *
+        (
+            0.016 *
+            panel_in
+        );
+
+    /*
+     * ========================================================
+     * TEXT FLICKER
+     * ========================================================
+     */
+
+    float text_glitch_random =
+        hash_value(
+            float2(
+                floor(
+                    uv.y *
+                    95.0
+                ),
+                frame *
+                0.61
+            )
+        );
+
+    float text_glitch =
+        step(
+            0.982,
+            text_glitch_random
+        )
+        *
+        interference;
+
+    scene.rgb =
+        lerp(
+            scene.rgb,
+            float3(
+                1.0,
+                1.0,
+                1.0
+            ),
+            text_alpha *
+            text_glitch *
+            0.22
+        );
+
+    /*
+     * ========================================================
+     * RECOVERY
+     * ========================================================
+     */
+
+    scene.rgb =
+        lerp(
+            scene.rgb,
+            scene_b.rgb,
+            smoothstep(
+                0.84,
+                0.99,
+                t
+            )
+        );
+
+    scene.a =
+        1.0;
+
+    return scene;
+}
+
+float4 render_halloween(
+    VertData v_in
+)
+{
+    float t =
+        saturate(
+            progress
+        );
+
+    float2 uv =
+        v_in.uv;
+
+    float frame =
+        floor(
+            t *
+            180.0
+        );
+
+    float arrival =
+        smoothstep(
+            0.04,
+            0.25,
+            t
+        );
+
+    float horror =
+        smoothstep(
+            0.14,
+            0.32,
+            t
+        )
+        *
+        (
+            1.0 -
+            smoothstep(
+                0.68,
+                0.84,
+                t
+            )
+        );
+
+    /*
+     * ========================================================
+     * BACKGROUND LAYER
+     *
+     * Cena A -> Cena B.
+     *
+     * A Cena B termina aqui como background.
+     * Tudo abaixo desta linha pertence à camada HALLOWEEN
+     * e é desenhado por cima.
+     * ========================================================
+     */
+
+    float2 centered =
+        uv -
+        float2(
+            0.50,
+            0.50
+        );
+
+    float camera_shift =
+        sin(
+            t *
+            7.0
+        )
+        *
+        0.0015
+        *
+        horror;
+
+    float2 horror_uv =
+        uv +
+        float2(
+            camera_shift,
+            0.0
+        );
+
+    float4 source =
+        sample_scene(
+            tex_a,
+            horror_uv,
+            0.0015 *
+            horror
+        );
+
+    float4 target =
+        tex_b.Sample(
+            textureSampler,
+            uv
+        );
+
+    float scene_mix =
+        smoothstep(
+            0.40,
+            0.58,
+            t
+        );
+
+    float3 base_scene =
+        grayscale_value(
+            source.rgb
+        );
+
+    /*
+     * BACKGROUND FINAL
+     *
+     * Este é o único ponto onde a Cena B entra.
+     * Depois daqui, target deixa de participar na composição.
+     */
+
+    float3 background_scene =
+        lerp(
+            base_scene,
+            target.rgb,
+            scene_mix
+        );
+
+    /*
+     * ========================================================
+     * FOREGROUND LAYER
+     * ========================================================
+     */
+
+    float3 scene =
+        background_scene;
+
+    /*
+     * DARK CINEMATIC BASE
+     */
+
+    scene *=
+        1.0 -
+        horror *
+        0.70;
+
+    /*
+     * VIGNETTE
+     */
+
+    float vignette =
+        smoothstep(
+            0.20,
+            0.78,
+            length(
+                centered
+            )
+        );
+
+    scene *=
+        1.0 -
+        vignette *
+        horror *
+        0.56;
+
+    /*
+     * ORANGE MOON
+     */
+
+    float moon =
+        glow_circle(
+            uv,
+            float2(
+                0.68,
+                0.31
+            ),
+            0.095,
+            0.28
+        );
+
+    float moon_noise =
+        noise_value(
+            uv *
+            26.0 +
+            float2(
+                frame *
+                0.005,
+                0.0
+            )
+        );
+
+    float moon_surface =
+        moon *
+        (
+            0.72 +
+            moon_noise *
+            0.28
+        )
+        *
+        horror;
+
+    scene +=
+        moon_surface *
+        float3(
+            1.00,
+            0.16,
+            0.015
+        )
+        *
+        0.72;
+
+    /*
+     * CEMETERY HORIZON
+     */
+
+    float ground =
+        smoothstep(
+            0.73,
+            0.70,
+            uv.y
+        );
+
+    float cemetery =
+        ground *
+        horror;
+
+    /*
+     * Graveyard silhouettes.
+     */
+
+    float grave_1 =
+        step(
+            abs(
+                uv.x -
+                0.14
+            ),
+            0.028
+        )
+        *
+        step(
+            0.67,
+            uv.y
+        )
+        *
+        step(
+            uv.y,
+            0.78
+        );
+
+    float grave_2 =
+        step(
+            abs(
+                uv.x -
+                0.29
+            ),
+            0.020
+        )
+        *
+        step(
+            0.70,
+            uv.y
+        )
+        *
+        step(
+            uv.y,
+            0.80
+        );
+
+    float grave_3 =
+        step(
+            abs(
+                uv.x -
+                0.48
+            ),
+            0.030
+        )
+        *
+        step(
+            0.68,
+            uv.y
+        )
+        *
+        step(
+            uv.y,
+            0.80
+        );
+
+    float grave_4 =
+        step(
+            abs(
+                uv.x -
+                0.73
+            ),
+            0.024
+        )
+        *
+        step(
+            0.69,
+            uv.y
+        )
+        *
+        step(
+            uv.y,
+            0.79
+        );
+
+    float grave_5 =
+        step(
+            abs(
+                uv.x -
+                0.88
+            ),
+            0.032
+        )
+        *
+        step(
+            0.66,
+            uv.y
+        )
+        *
+        step(
+            uv.y,
+            0.80
+        );
+
+    float graves =
+        cemetery *
+        (
+            grave_1 +
+            grave_2 +
+            grave_3 +
+            grave_4 +
+            grave_5
+        );
+
+    scene =
+        lerp(
+            scene,
+            float3(
+                0.005,
+                0.003,
+                0.002
+            ),
+            saturate(
+                graves
+            )
+        );
+
+    /*
+     * CROOKED TREE SHADOWS
+     */
+
+    float tree_left =
+        smoothstep(
+            0.035,
+            0.0,
+            abs(
+                uv.x -
+                0.06 +
+                sin(
+                    uv.y *
+                    11.0
+                )
+                *
+                0.014
+            )
+        )
+        *
+        step(
+            0.22,
+            uv.y
+        );
+
+    float tree_right =
+        smoothstep(
+            0.035,
+            0.0,
+            abs(
+                uv.x -
+                0.93 +
+                cos(
+                    uv.y *
+                    13.0
+                )
+                *
+                0.016
+            )
+        )
+        *
+        step(
+            0.18,
+            uv.y
+        );
+
+    scene *=
+        1.0 -
+        (
+            tree_left +
+            tree_right
+        )
+        *
+        horror *
+        0.58;
+
+    /*
+     * FOG
+     */
+
+    float fog_noise =
+        noise_value(
+            uv *
+            float2(
+                7.0,
+                18.0
+            )
+            +
+            float2(
+                t *
+                0.5,
+                0.0
+            )
+        );
+
+    float fog =
+        smoothstep(
+            0.58,
+            0.92,
+            uv.y
+        )
+        *
+        (
+            0.45 +
+            fog_noise *
+            0.55
+        )
+        *
+        horror;
+
+    scene =
+        lerp(
+            scene,
+            float3(
+                0.10,
+                0.085,
+                0.070
+            ),
+            fog *
+            0.22
+        );
+
+    /*
+     * OLD FILM SCRATCHES
+     */
+
+    float scratch_x =
+        frac(
+            uv.x *
+            73.0 +
+            frame *
+            0.013
+        );
+
+    float scratch_hash =
+        hash_value(
+            float2(
+                floor(
+                    uv.x *
+                    73.0
+                ),
+                frame
+            )
+        );
+
+    float scratch =
+        (
+            1.0 -
+            smoothstep(
+                0.0,
+                0.017,
+                scratch_x
+            )
+        )
+        *
+        step(
+            0.86,
+            scratch_hash
+        )
+        *
+        horror;
+
+    scene +=
+        scratch *
+        float3(
+            0.12,
+            0.035,
+            0.005
+        );
+
+    /*
+     * HORROR FLASH
+     */
+
+    float flash_seed =
+        hash_value(
+            float2(
+                frame,
+                77.0
+            )
+        );
+
+    float horror_flash =
+        step(
+            0.994,
+            flash_seed
+        )
+        *
+        horror;
+
+    scene +=
+        horror_flash *
+        float3(
+            0.32,
+            0.045,
+            0.005
+        );
+
+    /*
+     * BLACK INTERRUPTION
+     */
+
+    float blackout =
+        smoothstep(
+            0.34,
+            0.46,
+            t
+        )
+        *
+        (
+            1.0 -
+            smoothstep(
+                0.55,
+                0.72,
+                t
+            )
+        );
+
+    scene *=
+        1.0 -
+        blackout *
+        0.70;
+
+    /*
+     * FINAL
+     */
+
+    return float4(
+        scene,
+        1.0
+    );
+}
+
+/*
+ * ============================================================
+ * NOVEMBER
+ *
+ * Time / memory anomaly.
+ * Starts like a signal freeze, then flashbang,
+ * repeated frames and scanlines.
+ * ============================================================
+ */
+
+float4 render_november(
+    VertData v_in
+)
+{
+    float t =
+        saturate(
+            progress
+        );
+
+    float2 uv =
+        v_in.uv;
+
+    float frame =
+        floor(
+            t *
+            180.0
+        );
+
+    float anomaly =
+        smoothstep(
+            0.06,
+            0.22,
+            t
+        )
+        *
+        (
+            1.0 -
+            smoothstep(
+                0.78,
+                0.92,
+                t
+            )
+        );
+
+    float temporal_peak =
+        smoothstep(
+            0.18,
+            0.36,
+            t
+        )
+        *
+        (
+            1.0 -
+            smoothstep(
+                0.64,
+                0.82,
+                t
+            )
+        );
+
+    float recovery =
+        smoothstep(
+            0.78,
+            0.995,
+            t
+        );
+
+    /*
+     * ========================================================
+     * MEMORY / GHOST FRAMES
+     * ========================================================
+     */
+
+    float time_row =
+        floor(
+            uv.y *
+            48.0
+        );
+
+    float time_random =
+        hash_value(
+            float2(
+                time_row,
+                frame *
+                0.47
+            )
+        );
+
+    float temporal_shift =
+        (
+            time_random -
+            0.5
+        )
+        *
+        0.032
+        *
+        anomaly;
+
+    float2 current_uv =
+        uv +
+        float2(
+            temporal_shift,
+            0.0
+        );
+
+    float4 current =
+        tex_a.Sample(
+            textureSampler,
+            saturate(
+                current_uv
+            )
+        );
+
+    float4 ghost_1 =
+        tex_a.Sample(
+            textureSampler,
+            saturate(
+                uv +
+                float2(
+                    0.012,
+                    0.0
+                )
+            )
+        );
+
+    float4 ghost_2 =
+        tex_a.Sample(
+            textureSampler,
+            saturate(
+                uv -
+                float2(
+                    0.018,
+                    0.0
+                )
+            )
+        );
+
+    float4 ghost_3 =
+        tex_a.Sample(
+            textureSampler,
+            saturate(
+                uv +
+                float2(
+                    0.0,
+                    0.008
+                )
+            )
+        );
+
+        float scene_mix =
+        smoothstep(
+            0.40,
+            0.58,
+            t
+        );
+
+    float3 base_scene =
+        grayscale_value(
+            current.rgb
+        );
+
+    float3 target_scene =
+        tex_b.Sample(
+            textureSampler,
+            uv
+        ).rgb;
+
+    float3 scene =
+        lerp(
+            base_scene,
+            target_scene,
+            scene_mix
+        );
+
+    scene =
+        lerp(
+            scene,
+            grayscale_value(
+                ghost_1.rgb
+            ),
+            anomaly *
+            0.22
+        );
+
+    scene =
+        lerp(
+            scene,
+            grayscale_value(
+                ghost_2.rgb
+            ),
+            anomaly *
+            0.18
+        );
+
+    scene =
+        lerp(
+            scene,
+            grayscale_value(
+                ghost_3.rgb
+            ),
+            anomaly *
+            0.10
+        );
+
+    /*
+     * ========================================================
+     * COLD TIME ANOMALY
+     * ========================================================
+     */
+
+    scene =
+        lerp(
+            scene,
+            scene *
+            float3(
+                0.70,
+                0.82,
+                1.00
+            ),
+            anomaly *
+            0.38
+        );
+
+    /*
+     * ========================================================
+     * OUTER CLOCK RINGS
+     * ========================================================
+     */
+
+    float2 center =
+        float2(
+            0.50,
+            0.50
+        );
+
+    float ring_outer =
+        ring_mask(
+            uv,
+            center,
+            0.30,
+            0.0022
+        );
+
+    float ring_middle =
+        ring_mask(
+            uv,
+            center,
+            0.245,
+            0.0015
+        );
+
+    float ring_inner =
+        ring_mask(
+            uv,
+            center,
+            0.205,
+            0.0010
+        );
+
+    float rings =
+        (
+            ring_outer *
+            0.90
+            +
+            ring_middle *
+            0.65
+            +
+            ring_inner *
+            0.42
+        )
+        *
+        anomaly;
+
+    scene +=
+        rings *
+        float3(
+            0.48,
+            0.64,
+            0.95
+        )
+        *
+        0.46;
+
+    /*
+     * ========================================================
+     * 12 CLOCK TICKS
+     * ========================================================
+     */
+
+    float ticks =
+        0.0;
+
+    for (
+        int i = 0;
+        i < 12;
+        i++
+    ) {
+
+        float angle =
+            (
+                float(i) /
+                12.0
+            )
+            *
+            6.2831853;
+
+        float2 direction =
+            float2(
+                cos(
+                    angle
+                ),
+                sin(
+                    angle
+                )
+            );
+
+        float2 tick_start =
+            center +
+            direction *
+            0.262;
+
+        float2 tick_end =
+            center +
+            direction *
+            0.288;
+
+        ticks +=
+            segment_mask(
+                uv,
+                tick_start,
+                tick_end,
+                0.0018
+            );
+    }
+
+    scene +=
+        ticks *
+        anomaly *
+        float3(
+            0.56,
+            0.72,
+            1.00
+        )
+        *
+        0.40;
+
+    /*
+     * ========================================================
+     * LARGE DIGITAL "11"
+     * ========================================================
+     */
+
+    float digit_left =
+        line_band(
+            uv.x,
+            0.445,
+            0.008
+        );
+
+    float digit_right =
+        line_band(
+            uv.x,
+            0.555,
+            0.008
+        );
+
+    float digit_top =
+        line_band(
+            uv.y,
+            0.405,
+            0.008
+        );
+
+    float digit_bottom =
+        line_band(
+            uv.y,
+            0.595,
+            0.008
+        );
+
+    float eleven =
+        (
+            digit_left +
+            digit_right +
+            digit_top +
+            digit_bottom
+        )
+        *
+        step(
+            0.37,
+            uv.x
+        )
+        *
+        (
+            1.0 -
+            step(
+                0.63,
+                uv.x
+            )
+        )
+        *
+        anomaly;
+
+    /*
+     * Thin cuts through the digits make the "11"
+     * look like a corrupted temporal display.
+     */
+
+    float digit_cut =
+        line_band(
+            uv.y,
+            0.500,
+            0.0022
+        )
+        *
+        anomaly;
+
+    eleven *=
+        1.0 -
+        digit_cut *
+        0.72;
+
+    scene +=
+        eleven *
+        float3(
+            0.68,
+            0.82,
+            1.00
+        )
+        *
+        0.52;
+
+    /*
+     * ========================================================
+     * MOVING CLOCK HANDS
+     * ========================================================
+     */
+
+    float hour_angle =
+        t *
+        5.5;
+
+    float minute_angle =
+        t *
+        14.0;
+
+    float second_angle =
+        t *
+        48.0;
+
+    float2 hour_end =
+        center +
+        float2(
+            cos(
+                hour_angle
+            ),
+            sin(
+                hour_angle
+            )
+        )
+        *
+        0.105;
+
+    float2 minute_end =
+        center +
+        float2(
+            cos(
+                minute_angle
+            ),
+            sin(
+                minute_angle
+            )
+        )
+        *
+        0.18;
+
+    float2 second_end =
+        center +
+        float2(
+            cos(
+                second_angle
+            ),
+            sin(
+                second_angle
+            )
+        )
+        *
+        0.23;
+
+    float hour_hand =
+        segment_mask(
+            uv,
+            center,
+            hour_end,
+            0.004
+        );
+
+    float minute_hand =
+        segment_mask(
+            uv,
+            center,
+            minute_end,
+            0.0025
+        );
+
+    float second_hand =
+        segment_mask(
+            uv,
+            center,
+            second_end,
+            0.0012
+        );
+
+    scene +=
+        (
+            hour_hand *
+            0.9
+            +
+            minute_hand
+            +
+            second_hand *
+            0.7
+        )
+        *
+        anomaly
+        *
+        float3(
+            0.70,
+            0.84,
+            1.00
+        );
+
+    /*
+     * ========================================================
+     * ORBITING TIME MARKERS
+     * ========================================================
+     */
+
+    float orbit_angle =
+        t *
+        4.2;
+
+    float2 orbit_pos =
+        center +
+        float2(
+            cos(
+                orbit_angle
+            ),
+            sin(
+                orbit_angle
+            )
+        )
+        *
+        0.285;
+
+    float orbit =
+        glow_circle(
+            uv,
+            orbit_pos,
+            0.008,
+            0.030
+        )
+        *
+        anomaly;
+
+    scene +=
+        orbit *
+        float3(
+            0.78,
+            0.88,
+            1.00
+        )
+        *
+        0.66;
+
+    /*
+     * ========================================================
+     * TEMPORAL GRID
+     * ========================================================
+     */
+
+    float grid_x_1 =
+        line_band(
+            uv.x,
+            0.16,
+            0.0008
+        );
+
+    float grid_x_2 =
+        line_band(
+            uv.x,
+            0.28,
+            0.0008
+        );
+
+    float grid_x_3 =
+        line_band(
+            uv.x,
+            0.72,
+            0.0008
+        );
+
+    float grid_x_4 =
+        line_band(
+            uv.x,
+            0.84,
+            0.0008
+        );
+
+    float grid_y_1 =
+        line_band(
+            uv.y,
+            0.18,
+            0.0008
+        );
+
+    float grid_y_2 =
+        line_band(
+            uv.y,
+            0.30,
+            0.0008
+        );
+
+    float grid_y_3 =
+        line_band(
+            uv.y,
+            0.70,
+            0.0008
+        );
+
+    float grid_y_4 =
+        line_band(
+            uv.y,
+            0.82,
+            0.0008
+        );
+
+    float temporal_grid =
+        (
+            grid_x_1 +
+            grid_x_2 +
+            grid_x_3 +
+            grid_x_4 +
+            grid_y_1 +
+            grid_y_2 +
+            grid_y_3 +
+            grid_y_4
+        )
+        *
+        anomaly;
+
+    scene +=
+        temporal_grid *
+        float3(
+            0.32,
+            0.48,
+            0.72
+        )
+        *
+        0.20;
+
+    /*
+     * ========================================================
+     * TEMPORAL TEARS
+     * ========================================================
+     */
+
+    float slice =
+        floor(
+            uv.y *
+            105.0
+        );
+
+    float slice_random =
+        hash_value(
+            float2(
+                slice,
+                frame *
+                0.71
+            )
+        );
+
+    float slice_mask =
+        step(
+            0.973,
+            slice_random
+        )
+        *
+        temporal_peak;
+
+    float2 sliced_uv =
+        uv +
+        float2(
+            (
+                slice_random -
+                0.5
+            )
+            *
+            0.12
+            *
+            slice_mask,
+            0.0
+        );
+
+    float3 sliced_scene =
+        grayscale_value(
+            tex_a.Sample(
+                textureSampler,
+                saturate(
+                    sliced_uv
+                )
+            ).rgb
+        );
+
+    scene =
+        lerp(
+            scene,
+            sliced_scene,
+            slice_mask *
+            0.74
+        );
+
+    /*
+     * ========================================================
+     * SCANLINES
+     * ========================================================
+     */
+
+    float scan_a =
+        sin(
+            uv.y *
+            1520.0
+        );
+
+    float scan_b =
+        sin(
+            uv.y *
+            520.0 +
+            t *
+            95.0
+        );
+
+    scene +=
+        (
+            scan_a *
+            0.023
+            +
+            scan_b *
+            0.012
+        )
+        *
+        anomaly
+        *
+        float3(
+            0.56,
+            0.68,
+            0.92
+        );
+
+    /*
+     * ========================================================
+     * TEMPORAL PULSE
+     * ========================================================
+     */
+
+    float pulse =
+        smoothstep(
+            0.455,
+            0.47,
+            t
+        )
+        *
+        (
+            1.0 -
+            smoothstep(
+                0.49,
+                0.515,
+                t
+            )
+        );
+
+    scene +=
+        pulse *
+        float3(
+            0.70,
+            0.82,
+            1.00
+        )
+        *
+        0.32;
+
+    /*
+     * ========================================================
+     * MEMORY PARTICLES
+     * ========================================================
+     */
+
+    float particle_random =
+        hash_value(
+            floor(
+                uv *
+                float2(
+                    90.0,
+                    55.0
+                )
+            )
+            +
+            frame
+        );
+
+    float particles =
+        step(
+            0.992,
+            particle_random
+        )
+        *
+        anomaly;
+
+    scene +=
+        particles *
+        float3(
+            0.72,
+            0.84,
+            1.00
+        )
+        *
+        0.35;
+
+    /*
+     * ========================================================
+     * RECOVERY
+     * ========================================================
+     */
+
+    float4 target =
+        tex_b.Sample(
+            textureSampler,
+            uv
+        );
+
+    scene =
+        lerp(
+            scene,
+            target.rgb,
+            recovery
+        );
+
+    return float4(
+        scene,
+        1.0
+    );
+}float4 render_christmas(
+    VertData v_in
+)
+{
+    float t =
+        saturate(
+            progress
+        );
+
+    float2 uv =
+        v_in.uv;
+
+    float frame =
+        floor(
+            t *
+            150.0
+        );
+
+    float festive =
+        smoothstep(
+            0.05,
+            0.23,
+            t
+        )
+        *
+        (
+            1.0 -
+            smoothstep(
+                0.76,
+                0.92,
+                t
+            )
+        );
+
+    float darkness =
+        smoothstep(
+            0.14,
+            0.36,
+            t
+        )
+        *
+        (
+            1.0 -
+            smoothstep(
+                0.61,
+                0.80,
+                t
+            )
+        );
+
+    float recovery =
+        smoothstep(
+            0.79,
+            0.995,
+            t
+        );
+
+    float4 source =
+        tex_a.Sample(
+            textureSampler,
+            uv
+        );
+
+    float4 target =
+        tex_b.Sample(
+            textureSampler,
+            uv
+        );
+
+        float scene_mix =
+        smoothstep(
+            0.40,
+            0.58,
+            t
+        );
+
+    float3 scene =
+        lerp(
+            source.rgb,
+            target.rgb,
+            scene_mix
+        );
+
+    /*
+     * CINEMATIC CHRISTMAS BASE
+     */
+
+    scene =
+        lerp(
+            scene,
+            grayscale_value(
+                scene
+            ),
+            festive *
+            0.30
+        );
+
+    scene *=
+        1.0 -
+        darkness *
+        0.80;
+
+    /*
+     * WARM LIGHT
+     */
+
+    float window_glow =
+        1.0 -
+        smoothstep(
+            0.08,
+            0.50,
+            length(
+                uv -
+                float2(
+                    0.20,
+                    0.48
+                )
+            )
+        );
+
+    scene +=
+        window_glow *
+        float3(
+            0.16,
+            0.035,
+            0.006
+        )
+        *
+        festive
+        *
+        0.30;
+
+    /*
+     * CEILING
+     */
+
+    float ceiling =
+        1.0 -
+        smoothstep(
+            0.06,
+            0.31,
+            uv.y
+        );
+
+    scene =
+        lerp(
+            scene,
+            float3(
+                0.038,
+                0.014,
+                0.009
+            ),
+            ceiling *
+            festive *
+            0.84
+        );
+
+    /*
+     * MAIN LIGHT STRING
+     */
+
+    float cable_y =
+        0.135 +
+        sin(
+            uv.x *
+            13.0
+        )
+        *
+        0.022;
+
+    float cable =
+        line_band(
+            uv.y,
+            cable_y,
+            0.0020
+        )
+        *
+        festive;
+
+    scene +=
+        cable *
+        float3(
+            0.10,
+            0.045,
+            0.016
+        )
+        *
+        0.78;
+
+    float bulb_1 =
+        glow_circle(
+            uv,
+            float2(
+                0.07,
+                0.137
+            ),
+            0.010,
+            0.038
+        );
+
+    float bulb_2 =
+        glow_circle(
+            uv,
+            float2(
+                0.16,
+                0.158
+            ),
+            0.011,
+            0.040
+        );
+
+    float bulb_3 =
+        glow_circle(
+            uv,
+            float2(
+                0.27,
+                0.132
+            ),
+            0.010,
+            0.038
+        );
+
+    float bulb_4 =
+        glow_circle(
+            uv,
+            float2(
+                0.39,
+                0.162
+            ),
+            0.011,
+            0.040
+        );
+
+    float bulb_5 =
+        glow_circle(
+            uv,
+            float2(
+                0.50,
+                0.135
+            ),
+            0.010,
+            0.040
+        );
+
+    float bulb_6 =
+        glow_circle(
+            uv,
+            float2(
+                0.61,
+                0.160
+            ),
+            0.011,
+            0.040
+        );
+
+    float bulb_7 =
+        glow_circle(
+            uv,
+            float2(
+                0.72,
+                0.134
+            ),
+            0.010,
+            0.038
+        );
+
+    float bulb_8 =
+        glow_circle(
+            uv,
+            float2(
+                0.83,
+                0.157
+            ),
+            0.011,
+            0.040
+        );
+
+    float bulb_9 =
+        glow_circle(
+            uv,
+            float2(
+                0.94,
+                0.136
+            ),
+            0.010,
+            0.038
+        );
+
+    float bulb_index =
+        floor(
+            uv.x *
+            9.0
+        );
+
+    float bulb_phase =
+        frac(
+            bulb_index *
+            0.37
+        );
+
+    float3 bulb_color;
+
+    if (
+        bulb_phase <
+        0.33
+    ) {
+
+        bulb_color =
+            float3(
+                1.00,
+                0.20,
+                0.035
+            );
+    }
+    else if (
+        bulb_phase <
+        0.66
+    ) {
+
+        bulb_color =
+            float3(
+                1.00,
+                0.70,
+                0.18
+            );
+    }
+    else {
+
+        bulb_color =
+            float3(
+                0.16,
+                0.62,
+                0.22
+            );
+    }
+
+    float flicker =
+        0.82 +
+        0.18 *
+        hash_value(
+            float2(
+                frame *
+                0.28,
+                22.0
+            )
+        );
+
+    float bulbs =
+        (
+            bulb_1 +
+            bulb_2 +
+            bulb_3 +
+            bulb_4 +
+            bulb_5 +
+            bulb_6 +
+            bulb_7 +
+            bulb_8 +
+            bulb_9
+        )
+        *
+        bulb_color
+        *
+        festive
+        *
+        flicker;
+
+    scene +=
+        bulbs *
+        0.78;
+
+    /*
+     * SECOND LIGHT STRING
+     */
+
+    float far_cable =
+        line_band(
+            uv.y,
+            0.245 +
+            cos(
+                uv.x *
+                9.0
+            )
+            *
+            0.012,
+            0.0011
+        )
+        *
+        festive;
+
+    scene +=
+        far_cable *
+        float3(
+            0.22,
+            0.07,
+            0.015
+        )
+        *
+        0.34;
+
+    /*
+     * SNOW
+     */
+
+    float2 snow_uv_a =
+        uv *
+        45.0;
+
+    float2 snow_uv_b =
+        uv *
+        78.0;
+
+    float2 snow_uv_c =
+        uv *
+        118.0;
+
+    float2 snow_uv_d =
+        uv *
+        170.0;
+
+    snow_uv_a.y +=
+        t *
+        0.70;
+
+    snow_uv_b.y +=
+        t *
+        1.05;
+
+    snow_uv_c.y +=
+        t *
+        1.48;
+
+    snow_uv_d.y +=
+        t *
+        1.90;
+
+    float2 cell_a =
+        floor(
+            snow_uv_a
+        );
+
+    float2 cell_b =
+        floor(
+            snow_uv_b
+        );
+
+    float2 cell_c =
+        floor(
+            snow_uv_c
+        );
+
+    float2 cell_d =
+        floor(
+            snow_uv_d
+        );
+
+    float2 local_a =
+        frac(
+            snow_uv_a
+        )
+        -
+        0.5;
+
+    float2 local_b =
+        frac(
+            snow_uv_b
+        )
+        -
+        0.5;
+
+    float2 local_c =
+        frac(
+            snow_uv_c
+        )
+        -
+        0.5;
+
+    float2 local_d =
+        frac(
+            snow_uv_d
+        )
+        -
+        0.5;
+
+    float random_a =
+        hash_value(
+            cell_a +
+            11.0
+        );
+
+    float random_b =
+        hash_value(
+            cell_b +
+            37.0
+        );
+
+    float random_c =
+        hash_value(
+            cell_c +
+            61.0
+        );
+
+    float random_d =
+        hash_value(
+            cell_d +
+            101.0
+        );
+
+    float snow_1 =
+        (
+            1.0 -
+            smoothstep(
+                0.020,
+                0.060,
+                length(
+                    local_a
+                )
+            )
+        )
+        *
+        step(
+            0.76,
+            random_a
+        );
+
+    float snow_2 =
+        (
+            1.0 -
+            smoothstep(
+                0.016,
+                0.052,
+                length(
+                    local_b
+                )
+            )
+        )
+        *
+        step(
+            0.74,
+            random_b
+        );
+
+    float snow_3 =
+        (
+            1.0 -
+            smoothstep(
+                0.012,
+                0.043,
+                length(
+                    local_c
+                )
+            )
+        )
+        *
+        step(
+            0.72,
+            random_c
+        );
+
+    float snow_4 =
+        (
+            1.0 -
+            smoothstep(
+                0.009,
+                0.034,
+                length(
+                    local_d
+                )
+            )
+        )
+        *
+        step(
+            0.70,
+            random_d
+        );
+
+    float snow =
+        snow_1 *
+        0.62
+        +
+        snow_2 *
+        0.46
+        +
+        snow_3 *
+        0.32
+        +
+        snow_4 *
+        0.20;
+
+    scene +=
+        snow *
+        float3(
+            0.90,
+            0.96,
+            1.00
+        )
+        *
+        festive;
+
+    /*
+     * CENTRAL DARK TITLE BED
+     */
+
+    float title_distance =
+        length(
+            (
+                uv -
+                float2(
+                    0.50,
+                    0.475
+                )
+            )
+            *
+            float2(
+                0.72,
+                1.25
+            )
+        );
+
+    float title_backdrop =
+        1.0 -
+        smoothstep(
+            0.20,
+            0.62,
+            title_distance
+        );
+
+    scene *=
+        1.0 -
+        title_backdrop *
+        festive *
+        0.34;
+
+    /*
+     * SIGNAL LOST
+     * Grande, centrado e dominante.
+     */
+
+    float2 title_uv;
+
+    title_uv.x =
+        lerp(
+            0.145,
+            0.545,
+            saturate(
+                (
+                    uv.x -
+                    0.08
+                )
+                /
+                0.84
+            )
+        );
+
+    title_uv.y =
+        lerp(
+            0.348,
+            0.438,
+            saturate(
+                (
+                    uv.y -
+                    0.295
+                )
+                /
+                0.36
+            )
+        );
+
+    float title_area =
+        step(
+            0.08,
+            uv.x
+        )
+        *
+        (
+            1.0 -
+            step(
+                0.92,
+                uv.x
+            )
+        )
+        *
+        step(
+            0.29,
+            uv.y
+        )
+        *
+        (
+            1.0 -
+            step(
+                0.66,
+                uv.y
+            )
+        );
+
+    float title_sample_0 =
+        report_tex.Sample(
+            reportSampler,
+            saturate(
+                title_uv
+            )
+        ).a;
+
+    float title_sample_1 =
+        report_tex.Sample(
+            reportSampler,
+            saturate(
+                title_uv +
+                float2(
+                    0.0018,
+                    0.0
+                )
+            )
+        ).a;
+
+    float title_sample_2 =
+        report_tex.Sample(
+            reportSampler,
+            saturate(
+                title_uv -
+                float2(
+                    0.0018,
+                    0.0
+                )
+            )
+        ).a;
+
+    float title_sample_3 =
+        report_tex.Sample(
+            reportSampler,
+            saturate(
+                title_uv +
+                float2(
+                    0.0,
+                    0.0014
+                )
+            )
+        ).a;
+
+    float title_sample_4 =
+        report_tex.Sample(
+            reportSampler,
+            saturate(
+                title_uv -
+                float2(
+                    0.0,
+                    0.0014
+                )
+            )
+        ).a;
+
+    float title_alpha =
+        max(
+            max(
+                title_sample_0,
+                title_sample_1
+            ),
+            max(
+                title_sample_2,
+                max(
+                    title_sample_3,
+                    title_sample_4
+                )
+            )
+        )
+        *
+        title_area
+        *
+        festive;
+
+    /*
+     * RED TITLE GLOW
+     */
+
+    float title_glow =
+        1.0 -
+        smoothstep(
+            0.08,
+            0.34,
+            length(
+                uv -
+                float2(
+                    0.50,
+                    0.475
+                )
+            )
+        );
+
+    scene +=
+        title_glow *
+        festive *
+        float3(
+            0.52,
+            0.004,
+            0.001
+        )
+        *
+        0.22;
+
+    scene =
+        lerp(
+            scene,
+            float3(
+                1.00,
+                0.018,
+                0.008
+            ),
+            title_alpha *
+            1.00
+        );
+
+    /*
+     * LIGHTS AROUND TITLE
+     */
+
+    float title_cable_y =
+        0.395 +
+        sin(
+            uv.x *
+            17.0
+        )
+        *
+        0.014;
+
+    float title_cable =
+        line_band(
+            uv.y,
+            title_cable_y,
+            0.0016
+        )
+        *
+        title_area
+        *
+        festive;
+
+    scene +=
+        title_cable *
+        float3(
+            0.25,
+            0.11,
+            0.025
+        )
+        *
+        0.76;
+
+    float title_bulbs =
+        glow_circle(
+            uv,
+            float2(
+                0.18,
+                0.402
+            ),
+            0.008,
+            0.032
+        )
+        +
+        glow_circle(
+            uv,
+            float2(
+                0.27,
+                0.395
+            ),
+            0.008,
+            0.032
+        )
+        +
+        glow_circle(
+            uv,
+            float2(
+                0.37,
+                0.404
+            ),
+            0.009,
+            0.034
+        )
+        +
+        glow_circle(
+            uv,
+            float2(
+                0.47,
+                0.397
+            ),
+            0.008,
+            0.032
+        )
+        +
+        glow_circle(
+            uv,
+            float2(
+                0.57,
+                0.404
+            ),
+            0.008,
+            0.032
+        )
+        +
+        glow_circle(
+            uv,
+            float2(
+                0.67,
+                0.395
+            ),
+            0.009,
+            0.034
+        )
+        +
+        glow_circle(
+            uv,
+            float2(
+                0.77,
+                0.402
+            ),
+            0.008,
+            0.032
+        );
+
+    scene +=
+        title_bulbs *
+        float3(
+            1.00,
+            0.58,
+            0.08
+        )
+        *
+        festive
+        *
+        0.74;
+
+    /*
+     * RED / GOLD FRAMES
+     */
+
+    float lower_line =
+        line_band(
+            uv.y,
+            0.620,
+            0.0012
+        )
+        *
+        festive;
+
+    float upper_line =
+        line_band(
+            uv.y,
+            0.315,
+            0.0010
+        )
+        *
+        festive;
+
+    scene +=
+        (
+            lower_line *
+            0.75
+            +
+            upper_line *
+            0.55
+        )
+        *
+        float3(
+            0.92,
+            0.22,
+            0.045
+        );
+
+    /*
+     * WARM BOKEH
+     */
+
+    float bokeh_1 =
+        glow_circle(
+            uv,
+            float2(
+                0.11,
+                0.42
+            ),
+            0.017,
+            0.060
+        );
+
+    float bokeh_2 =
+        glow_circle(
+            uv,
+            float2(
+                0.89,
+                0.45
+            ),
+            0.014,
+            0.055
+        );
+
+    float bokeh_3 =
+        glow_circle(
+            uv,
+            float2(
+                0.16,
+                0.67
+            ),
+            0.012,
+            0.050
+        );
+
+    float bokeh_4 =
+        glow_circle(
+            uv,
+            float2(
+                0.86,
+                0.69
+            ),
+            0.016,
+            0.060
+        );
+
+    scene +=
+        (
+            bokeh_1 +
+            bokeh_2 +
+            bokeh_3 +
+            bokeh_4
+        )
+        *
+        float3(
+            1.00,
+            0.32,
+            0.04
+        )
+        *
+        festive
+        *
+        0.18;
+
+    /*
+     * SIGNAL GLITCH
+     */
+
+    float signal_row =
+        floor(
+            uv.y *
+            75.0
+        );
+
+    float signal_random =
+        hash_value(
+            float2(
+                signal_row,
+                frame *
+                0.63
+            )
+        );
+
+    float signal_break =
+        step(
+            0.983,
+            signal_random
+        )
+        *
+        festive;
+
+    scene *=
+        1.0 -
+        signal_break *
+        0.34;
+
+    /*
+     * RECOVERY
+     */
+
+    scene =
+        lerp(
+            scene,
+            target.rgb,
+            recovery
+        );
+
+    return float4(
+        scene,
+        1.0
+    );
+}
+
+float4 CIGAPixel(
+    VertData v_in
+) : TARGET
+{
+    /*
+     * 0 = NORMAL
+     */
+    if (
+        theme_version < 0.5
+    ) {
+        return
+            render_normal(
+                v_in
+            );
+    }
+
+    /*
+     * 1 = HALLOWEEN
+     */
+    if (
+        theme_version < 1.5
+    ) {
+        return
+            render_halloween(
+                v_in
+            );
+    }
+
+    /*
+     * 2 = NOVEMBER
+     */
+    if (
+        theme_version < 2.5
+    ) {
+        return
+            render_november(
+                v_in
+            );
+    }
+
+    /*
+     * 3 = CHRISTMAS
+     */
+    return
+        render_christmas(
+            v_in
+        );
+}
+
+technique CIGA
+{
+    pass
+    {
+        vertex_shader = VSDefault(v_in);
+        pixel_shader = CIGAPixel(v_in);
+    }
+}
+
+
+
+
+
+
+
+
+
